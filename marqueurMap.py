@@ -10,6 +10,7 @@ class Marqueur:
         self.coord = (x, y)
         self.description = description
         self.lien = lien
+        self.dateCréa = 11
 
     def est_clique(self, click_x: int, click_y: int, tolerance: int = 20) -> bool:
         """Vérifie si un clic Streamlit est proche du marqueur."""

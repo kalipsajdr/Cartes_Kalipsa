@@ -1,410 +1,306 @@
 import streamlit as st
-import HashMail
 import pandas as pd
-from google_auth_oauthlib.flow import Flow
-from marqueurMap import Marqueur
-from imageJDR import ImageJDR
+import streamlit.components.v1 as components
+import base64
 
-st.set_page_config(layout="wide")
+import gspread
+from google.oauth2.service_account import Credentials
+from RecupLogo import charger_image_depuis_drive, charger_liens_importants
 
-# --- CONFIGURATION ---
-REDIRECT_URI = "http://localhost:8501"
-URL_BDD = "https://docs.google.com/spreadsheets/d/15CnBOGKNwe_ir_WkzSjO-4dnsDmgoCBUkNx6913J21o/edit"
+from connexionCompte import afficher_module_connexion
 
-client_config = {
-    "web": {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }
-}
+# Connexion automatique via st.secrets
+scopes = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
 
-# --- INITIALISATION DU VIGILE ---
-# On utilise le décorateur @st.cache_resource pour que le flow 
-# soit créé UNE SEULE FOIS et ne change JAMAIS.
-@st.cache_resource
-def get_flow():
-    return Flow.from_client_config(
-        client_config,
-        scopes=["https://www.googleapis.com/auth/userinfo.email", "openid"],
-        redirect_uri=REDIRECT_URI
-    )
+creds = Credentials.from_service_account_info(
+    st.secrets["gcp_service_account"], 
+    scopes=scopes
+)
 
-@st.cache_data(ttl=3600)
-def charger_df_classe(_conn, url, nom_classe):
-    return _conn.read(spreadsheet=url, worksheet=nom_classe, ttl=3600)
+# Client Google Sheets
+client = gspread.authorize(creds)
+sheet = client.open_by_key("1wLIA_HaiIOUEJ818Z1zN0aEIiWXj_2RuD3BkvKrOalQ")
 
-def bouton_connexion(url):
-    # CSS pour recréer le style Streamlit avec effet de survol
-    st.markdown("""
-        <style>
-        /* Style de base du bouton (lien) */
-        .stGoogleButton {
-            display: flex !important; /* Changé de inline-flex à flex */
-            align-items: center !important;
-            justify-content: center !important;
-            width: 50% !important;
-            margin-left: auto !important; /* Ajout de !important pour être sûr */
-            margin-right: auto !important;
-            padding: 10px 20px !important;
-            background-color: #f0f2f6 !important; /* Couleur de fond par défaut */
-            color: #31333F !important; /* Couleur du texte */
-            border-radius: 8px !important;
-            border: 1px solid rgba(49, 51, 63, 0.2) !important;
-            font-weight: 500 !important;
-            text-decoration: none !important;
-            transition: background-color 0.1s ease-in-out, border-color 0.1s ease-in-out !important;
-            cursor: pointer !important;
-            margin-bottom: 10px !important;
-        }
+# --- 1. RÉCUPÉRATION DU LOGO DEPUIS GOOGLE SHEETS ---
+SPREADSHEET_ID = "1wLIA_HaiIOUEJ818Z1zN0aEIiWXj_2RuD3BkvKrOalQ"
 
-        /* Effet de survol (HOVER) */
-        .stGoogleButton:hover {
-            background-color: #e0e4eb !important; /* Couleur plus sombre au survol */
-            border-color: rgba(49, 51, 63, 0.4) !important;
-        }
+# --- 1. Chargement des liens importants ---
+liens = charger_liens_importants(SPREADSHEET_ID)
 
-        /* Effet de clic (ACTIVE) */
-        .stGoogleButton:active {
-            background-color: #d0d4db !important;
-            border-color: rgba(49, 51, 63, 0.6) !important;
-        }
-        </style>
-    """, unsafe_allow_html=True)
+# --- 2. Affichage propre du Logo et du Titre ---
+flux_logo = charger_image_depuis_drive("Logo.png")
 
-    # Affichage du bouton avec la classe personnalisée
-    st.markdown(f'<a href="{url}" target="_self" class="stGoogleButton">Se connecter avec Google</a>', unsafe_allow_html=True)
-
-#Début du main
-# Instanciation simple et propre
-m1 = Marqueur(250, 180, description="Entrée du Donjon", lien="map_donjon_1")
-carte = ImageJDR("https://drive.google.com/file/d/TON_FILE_ID/view", marqueurs=[m1])
-
-if "email_utilisateur" not in st.session_state:
-    st.markdown("<h1 style='text-align: center;'>🧙‍♂️ Maverick JDR</h1>", unsafe_allow_html=True)
+if flux_logo:
+    # On crée deux colonnes : une étroite pour l'image, une plus large pour le texte
+    col_img, col_txt = st.columns([1, 5])
+    
+    with col_img:
+        st.image(flux_logo, width=70)
         
-    if 'bdd' not in st.session_state:
-        st.session_state.bdd= AccesBdd()
-    bdd = st.session_state.bdd
-    
-    flow = get_flow()
-    
-    # On génère l'URL de connexion
-    # code_challenge_method=None est important ici pour la simplicité
-    auth_url, _ = flow.authorization_url(prompt='consent')
-    
-    empty_l, center_col, empty_r = st.columns([1, 2, 1])
-
-    with center_col:
-        st.info("Bienvenue aventurier. Connecte-toi pour continuer.")
-        
-    bouton_connexion(auth_url)
-
-    # Vérification du retour de Google
-    if "code" in st.query_params:
-        try:
-            code_google = st.query_params["code"]
-            # On échange le code contre les infos de l'utilisateur
-            flow.fetch_token(code=code_google)
-            session = flow.authorized_session()
-            user_info = session.get("https://www.googleapis.com/oauth2/v1/userinfo").json()
-            
-            st.session_state.email_utilisateur = HashMail.hasher_email(user_info["email"])
-            st.query_params.clear() # On nettoie l'URL
-            st.rerun()
-        except Exception as e:
-            st.error(f"Détail de l'erreur : {e}")
-            st.warning("🔄 Rafraîchis la page (F5) et réessaie une seule fois.")
+    with col_txt:
+        # On ajuste l'alignement vertical avec un peu de CSS ou directement un titre Markdown stylisé
+        st.markdown("<h2 style='margin-top: 5px;'>Navigation</h2>", unsafe_allow_html=True)
 else:
-    # --- INITIALISATION DES ACCÈS (Une seule fois) ---
-    if 'bdd' not in st.session_state:
-        st.session_state.bdd = AccesBdd()
-    
-    if 'bdd_manager_perso' not in st.session_state:
-        st.session_state.bdd_manager_perso = bddPerso.BddManagerPerso(URL_BDD)
+    st.markdown("## Navigation")
 
-    bdd = st.session_state.bdd
-    bddManager = st.session_state.bdd_manager_perso
+# --- 2. CONFIGURATION DE LA PAGE ---
+st.set_page_config(
+    page_title="Cartographie Interactive JDR",
+    page_icon=flux_logo, 
+    layout="wide",
+#    initial_sidebar_state="collapsed"  # <-- Masque la sidebar par défaut
+)
+
+# --- Affichage du logo dans la barre latérale si besoin ---
+# if logo_url:
+#     try:
+#         st.sidebar.image(logo_url, width=100)
+#     except Exception:
+#         st.sidebar.image("🗺️") # Fallback si le lien Drive bloque
+
+# --- 3. INITIALISATION DU SESSION STATE & DE LA BDD ---
+@st.cache_data(ttl=60)
+def charger_base_identification(sheet_id: str) -> pd.DataFrame:
+    """Chargement de la table Identification au démarrage."""
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Identification"
+    try:
+        df = pd.read_csv(url)
+        df.columns = df.columns.str.strip()
+        return df
+    except Exception:
+        return pd.DataFrame(columns=["ID", "Nom", "Mail", "Droit"])
+
+if "bdd_utilisateurs" not in st.session_state:
+    st.session_state.bdd_utilisateurs = charger_base_identification(SPREADSHEET_ID)
+
+if "utilisateur" not in st.session_state:
+    st.session_state.utilisateur = None  # Est maintenant bien initialisé !
+
+if "carte_courante" not in st.session_state:
+    st.session_state.carte_courante = "Carte du Monde"
+
+# --- 4. BARRE DE NAVIGATION ET ESPACE MEMBRE ---
+col_nav, col_auth = st.columns([3, 1.2])
+
+with col_auth:
+    # L'utilisateur et la session sont bien définis avant cet appel
+    afficher_module_connexion()
+
+st.divider()
+
+# --- 5. RESTE DE L'INTERFACE (Carte, Panneau) ---
+col_carte, col_panneau = st.columns([3, 1.2])
+
+fluxCarte = charger_image_depuis_drive("Carte Monde.png")
+
+with col_carte:
+    st.subheader(f"📍 {st.session_state.carte_courante}")
     
-    # --- TA LOGIQUE DE JEU ---
-    if "email_utilisateur" in st.session_state:
-        hashEmail = st.session_state.email_utilisateur
+    # --- Ligne de temps (Chronologie de la carte) ---
+    st.markdown("### ⏳ Ligne de temps")
+    
+    # Création du curseur de l'an 10 à l'an 900
+    annee_selectionnee = st.slider(
+        "Année de référence pour la carte",
+        min_value=10,
+        max_value=900,
+        value=10,  # Année par défaut au chargement
+        step=1,    # Pas d'1 an (tu peux passer à 5 ou 10 si tu préfères des sauts plus grands)
+        format="Année %d"
+    )
+    
+    # Sauvegarde dans la session pour y accéder facilement depuis tes futurs modules de marqueurs/événements
+    st.session_state["annee_carte"] = annee_selectionnee
+    
+    # Petit retour visuel (optionnel)
+    # st.caption(affichage := f"Affichage de la carte et des événements pour l'**Année {annee_selectionnee}**")
+    
+    #Zoom de la carte
+    # Initialisation de l'état du zoom s'il n'existe pas
+    if "zoom_niveau" not in st.session_state:
+        st.session_state["zoom_niveau"] = 100  # En pourcentage (ex: 100%)
+
+    # # Slider pour contrôler le zoom de la carte
+    # # --- Initialisation et affichage de ton Slider de Zoom ---
+    # if "zoom_niveau" not in st.session_state:
+    #     st.session_state["zoom_niveau"] = 100
+    
+    zoom_val = 100
+    # zoom_val = st.slider(
+    #     "Zoom de la carte",
+    #     min_value=50,
+    #     max_value=300,
+    #     value=st.session_state["zoom_niveau"],
+    #     step=10,
+    #     format="%d%%",
+    #     key="slider_zoom"
+    # )
+    
+    st.session_state["zoom_niveau"] = zoom_val
+
+    #Carte affichée
+
+    if fluxCarte:
+        if "zoom_niveau" not in st.session_state:
+            st.session_state["zoom_niveau"] = 100
         
-        # Utilisation de notre nouveau module
-        user_data, est_nouveau = bdd.verifier_ou_creer_utilisateur(hashEmail)
+        zoom_pct = st.session_state["zoom_niveau"]
+        largeur_base = 1000
+        largeur_actuelle = int(largeur_base * (zoom_pct / 100))
         
-        if est_nouveau:
-            st.subheader("🧙‍♂️ Bienvenue, nouvel aventurier !")
-            st.write("Ton email n'est pas encore enregistré dans Maverick. Au moment de l'enregistrement, ton email sera crypté pour des raison de confidentialité.")
+        # Conversion de l'image en Base64
+        fluxCarte.seek(0)
+        encoded_img = base64.b64encode(fluxCarte.read()).decode("utf-8")
+        img_data_url = f"data:image/png;base64,{encoded_img}"
+        
+        # Phrase d'indication au-dessus de la carte
+        st.markdown("<p style='text-align: center; color: #666; font-style: italic;'>💡 Pour le zoom, utilisez la molette de votre souris (ou Ctrl + Molette). Maintenez le clic gauche pour vous déplacer.</p>", unsafe_allow_html=True)
+    
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+            body {{
+                margin: 0;
+                background-color: #f8f9fa;
+                overflow: hidden;
+                font-family: sans-serif;
+            }}
+            /* Conteneur global qui englobe la carte et l'infobulle fixe */
+            #map-wrapper-outer {{
+                position: relative;
+                width: 100%;
+                height: 600px;
+            }}
+            #map-container {{
+                width: 100%;
+                height: 580px;
+                overflow: auto;
+                border: 2px solid #ccc;
+                border-radius: 8px;
+                background-color: #f8f9fa;
+                position: relative;
+                cursor: grab;
+                user-select: none;
+            }}
+            #map-container:active {{
+                cursor: grabbing;
+            }}
+            #map-image-wrapper {{
+                width: {largeur_actuelle}px;
+                height: auto;
+                pointer-events: none;
+                transform-origin: 0 0;
+            }}
+            img {{
+                width: 100%;
+                height: auto;
+                display: block;
+            }}
+            /* Infobulle positionnée de manière fixe sur le composant (ne bouge plus avec la carte) */
+            #zoom-badge {{
+                position: absolute;
+                bottom: 25px;
+                right: 20px;
+                background-color: rgba(0, 0, 0, 0.75);
+                color: white;
+                padding: 6px 12px;
+                border-radius: 20px;
+                font-size: 14px;
+                font-weight: bold;
+                pointer-events: none;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+                z-index: 100;
+            }}
+        </style>
+        </head>
+        <body>
+            <div id="map-wrapper-outer">
+                <div id="map-container">
+                    <div id="map-image-wrapper">
+                        <img src="{img_data_url}" />
+                    </div>
+                </div>
+                <!-- L'infobulle est ici, indépendante du scroll de la carte -->
+                <div id="zoom-badge">{zoom_pct}%</div>
+            </div>
+    
+            <script>
+            const container = document.getElementById('map-container');
+            const wrapper = document.getElementById('map-image-wrapper');
+            const badge = document.getElementById('zoom-badge');
             
-            with st.form("inscription"):
-                nouveau_pseudo = st.text_input("Choisis ton nom de héros (Pseudo) :")
-                valider = st.form_submit_button("Entrer dans l'aventure")
+            let isDown = false;
+            let startX, startY, scrollLeft, scrollTop;
+    
+            // Glisser-déposer (Pan)
+            container.addEventListener('mousedown', (e) => {{
+                isDown = true;
+                startX = e.pageX - container.offsetLeft;
+                startY = e.pageY - container.offsetTop;
+                scrollLeft = container.scrollLeft;
+                scrollTop = container.scrollTop;
+            }});
+    
+            container.addEventListener('mouseleave', () => {{ isDown = false; }});
+            container.addEventListener('mouseup', () => {{ isDown = false; }});
+    
+            container.addEventListener('mousemove', (e) => {{
+                if (!isDown) return;
+                e.preventDefault();
+                const x = e.pageX - container.offsetLeft;
+                const y = e.pageY - container.offsetTop;
+                const walkX = x - startX;
+                const walkY = y - startY;
+                container.scrollLeft = scrollLeft - walkX;
+                container.scrollTop = scrollTop - walkY;
+            }});
+    
+            // Zoom à la molette avec mise à jour de l'infobulle fixe
+            container.addEventListener('wheel', (e) => {{
+                e.preventDefault();
+                let currentWidth = wrapper.offsetWidth;
                 
-                if valider and nouveau_pseudo:
-                    with st.spinner("Création de ton compte..."):
-                        bdd.enregistrer_nouveau_joueur(hashEmail, nouveau_pseudo)
-                        st.success("Compte créé ! Bienvenue.")
-                        st.rerun()
-                elif valider:
-                    st.warning("Il nous faut un pseudo pour l'histoire !")
-                    
-        else:
-            # L'utilisateur existe déjà
-            if int(user_data['Actif']) == 1:
-                st.title(f"Heureux de te revoir, {user_data['Pseudo']} !")
-                st.write(f"Rang : {user_data['NiveauDroit']}")
+                let zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+                let newWidth = Math.round(currentWidth * zoomFactor);
                 
-                if st.sidebar.button("Se déconnecter"):
-                    st.session_state.clear()
-                    st.rerun()
-                
-                # Nouvel Utilisateur ?
-                user_data, est_nouveau = bdd.verifier_ou_creer_utilisateur(st.session_state.email_utilisateur)
-                if 'urls_references' not in st.session_state:
-                    st.session_state.urls_references = bdd.recup_urls_sources()
-                
-                if 'dict_global_ech_niv' not in st.session_state:
-                    df_ech = bdd.lire_onglet_local("EchelleNiveau")
-                    st.session_state.dict_global_ech_niv = df_ech.to_dict('records')
-                    
-                dicoEchNiv = st.session_state.dict_global_ech_niv
-                moteur_niveau = EchelleNiveau(dicoEchNiv)
-                
-                if 'dict_global_couleur_magie' not in st.session_state:
-                    df_coul_magies = bdd.lire_onglet_local("CouleursMagies")
-                    st.session_state.dict_global_couleur_magie = df_coul_magies.to_dict('records')
-                    
-                dicoCoulMagies = st.session_state.dict_global_couleur_magie
-                couleur_magie = CouleurMagies(dicoCoulMagies)
-                
-                if 'dict_global_materiaux_arme' not in st.session_state:
-                    df_mat_arme = bdd.lire_onglet_local("MatériauArmes")
-                    st.session_state.dict_global_materiaux_arme = df_mat_arme.to_dict('records')
-                    
-                dicoMatArme = st.session_state.dict_global_materiaux_arme
-                
-                urls = st.session_state.urls_references
-                # On accède directement à la valeur via la clé entre crochets
-                url_classes = urls.get('Classes')
-                url_races = urls.get('Races')
-                url_magies = urls.get('Magies')
-                url_invocations = urls.get('Invocations')
-                url_ressourcesEtCraft = urls.get('Ressources et craft')
-                
-                # Petite vérification de sécurité
-                if not url_classes:
-                    st.error("L'URL 'Classes' n'a pas été trouvée dans le dictionnaire des sources.")
-                    
-                if not url_magies:
-                    st.error("L'URL 'Magie' n'a pas été trouvée dans le dictionnaire des sources.")
+                if (newWidth < 500) newWidth = 500;
+                if (newWidth > 3000) newWidth = 3000;
+    
+                wrapper.style.width = newWidth + 'px';
+    
+                let currentPct = Math.round((newWidth / 1000) * 100);
+                badge.innerText = currentPct + '%';
+            }}, {{ passive: false }});
+            </script>
+        </body>
+        </html>
+        """
+        
+        components.html(html_content, height=600)
 
-                if not est_nouveau and int(user_data['Actif']) == 1:
-                    id_joueur = user_data['IdUtilisateur']
-                    
-                    # --- LOGIQUE D'AFFICHAGE ---
-                    df_persos = bddManager.recupLstPersosUti(id_joueur)
-                    
-                    if 'toutes_les_stats' not in st.session_state:
-                        st.session_state.toutes_les_stats = bddManager.charger_onglet_complet("Caracteristiques")
-                    
-                    # --- GESTION DE L'AFFICHAGE ---
-                    if st.session_state.get('page_creation', False):
-                        if st.button("⬅️ Retour à la liste"):
-                            st.session_state.page_creation = False
-                            st.rerun()
-                        
-                        # Appel du formulaire
-                        CreerPerso.afficher_formulaire_creation(id_joueur)
-                    
-                    else:
-                        st.title(f"Personnages de {user_data['Pseudo']}")
-                        
-                        if st.button("➕ Créer un nouveau personnage", use_container_width=True):
-                            st.session_state.page_creation = True
-                            st.rerun()
-                        
-                        st.divider()
-                        
-                        if df_persos.empty:
-                            st.info("Tu n'as pas encore de personnage.")
-                        else:
-                            # --- CHARGEMENT des informations globales (Une seule fois) ---
-                            if 'dict_global_carac' not in st.session_state:
-                                st.session_state.dict_global_carac = bddManager.charger_onglet_complet("Caracteristiques")
-                            
-                            if 'dict_global_comp' not in st.session_state:
-                                st.session_state.dict_global_comp = bddManager.charger_onglet_groupe("Competence")
-                                
-                            if 'dict_global_comp_spe' not in st.session_state:
-                                st.session_state.dict_global_comp_spe = bddManager.charger_onglet_complet("CompSpe")
-                            
-                            if 'dict_global_sorts' not in st.session_state:
-                                donnees_recuperees = bddManager.charger_onglet_sort("LstSorts")
-                                if donnees_recuperees:
-                                    st.session_state.dict_global_sorts = donnees_recuperees
-                                else:
-                                    st.session_state.dict_global_sorts = []
-                            
-                            if 'dict_global_maitrise' not in st.session_state:
-                                st.session_state.dict_global_maitrise = bddManager.charger_onglet_complet("Maitrise")
-                                
-                            if 'dict_global_equipement' not in st.session_state:
-                                st.session_state.dict_global_equipement = bddManager.charger_onglet_complet("Equipement")
-                            
-                            if 'ref_armes' not in st.session_state:
-                                df_armes = bdd.lire_onglet_local("Armes")
-                                # Supprime les lignes ayant le même nom avant de convertir en dictionnaire
-                                df_armes = df_armes.drop_duplicates(subset=['Nom'])
-                                dict_brut_armes = df_armes.set_index('Nom').to_dict(orient='index')
-                                st.session_state.ref_armes = {nom: Arme(data) for nom, data in dict_brut_armes.items()}
-                             
-                            if 'ref_armures' not in st.session_state:
-                                df_armures = bdd.lire_onglet_local("Armures")
-                                # On crée le dictionnaire brut
-                                dict_temp = df_armures.set_index('Nom').to_dict(orient='index')
-                                # On le stocke pour éviter l'erreur AttributeError
-                                st.session_state.dict_brut_armures = dict_temp
-                                st.session_state.ref_armures = {nom: Armure(data) for nom, data in dict_temp.items()}
-                                
-                            if 'ref_armures_elem' not in st.session_state:
-                                # 1. Lecture de l'onglet élémentaire
-                                df_armures_elem = bdd.lire_onglet_local("ArmuresElem")
-                                
-                                # 2. Création du dictionnaire brut indexé par le 'Nom' (colonne C de ton image)
-                                dict_temp_elem = df_armures_elem.set_index('Nom').to_dict(orient='index')
-                                st.session_state.dict_brut_armures_elem = dict_temp_elem
-                                
-                                # 3. Dictionnaire temporaire pour stocker les objets Armure élémentaires convertis
-                                armures_elem_objets = {}
-                                
-                                for nom_item, data in dict_temp_elem.items():
-                                    # On extrait la valeur d'armure globale fournie par la table (AP ou AM)
-                                    val_ap = data.get('AP', 0)
-                                    val_am = data.get('AM', 0)
-                                    
-                                    # Si la colonne donne une valeur globale (ex: 2), on la répartit sur chaque zone,
-                                    # ou on la laisse à 1 si c'est juste un indicateur (adapte selon tes règles).
-                                    v_zone_ap = 1 if val_ap else 0
-                                    v_zone_am = 1 if val_am else 0
-                                    
-                                    # On reconstruit un dictionnaire au format EXACT attendu par ta classe Armure
-                                    data_formatee = {
-                                        "nom": str(nom_item),
-                                        "descriptif": f"Armure élémentaire de type {data.get('Magie', 'Inconnu')}",
-                                        "type": str(data.get('Type', 'Vêtement')),
-                                        "stats": f"+{val_ap}AP" if val_ap else f"+{val_am}AM",
-                                        "solidite_max": 1,
-                                        "resistance": str(data.get('Effet', '')),
-                                        "faiblesse": "",
-                                        # Attribution des points convertis aux membres en minuscules
-                                        "t": v_zone_ap if val_ap else v_zone_am,
-                                        "c": v_zone_ap if val_ap else v_zone_am,
-                                        "bg": v_zone_ap if val_ap else v_zone_am,
-                                        "bd": v_zone_ap if val_ap else v_zone_am,
-                                        "jg": v_zone_ap if val_ap else v_zone_am,
-                                        "jd": v_zone_ap if val_ap else v_zone_am
-                                    }
-                                    
-                                    # Instanciation de l'objet Armure propre
-                                    armures_elem_objets[nom_item] = Armure(data_formatee)
-                                
-                                # 4. Sauvegarde dans son state dédié (au cas où tu en as besoin ailleurs)
-                                st.session_state.ref_armures_elem = armures_elem_objets
-                                
-                                # 5. L'ASTUCE : On fusionne directement dans le catalogue général des armures !
-                                # Comme ça, ton fichier "Equipement" trouvera la robe élémentaire sans aucun changement de code !
-                                if 'ref_armures' in st.session_state:
-                                    st.session_state.ref_armures.update(armures_elem_objets)
-                            
-                            if 'ref_boucliers' not in st.session_state:
-                                df_boucliers = bdd.lire_onglet_local("Boucliers")
-                                # ÉTAPE 1 : Créer la colonne d'index en fusionnant les colonnes C et E
-                                # On prend la valeur de 'Type de bouclier' si elle existe, sinon celle de 'Materiaux'
-                                df_boucliers['Nom_Technique'] = df_boucliers['Type de bouclier'].fillna(df_boucliers['Materiaux'])
-                                # ÉTAPE 2 : Nettoyage des lignes vides (si il y en a dans l'Excel)
-                                df_boucliers = df_boucliers.dropna(subset=['Nom_Technique'])
-                                # ÉTAPE 3 : Vérification des doublons (pour éviter l'erreur précédente)
-                                df_boucliers = df_boucliers.drop_duplicates(subset=['Nom_Technique'])
-                                # ÉTAPE 4 : Création du dictionnaire
-                                dict_brut_boucliers = df_boucliers.set_index('Nom_Technique').to_dict(orient='index')
-                                # ÉTAPE 5 : Création des objets
-                                st.session_state.ref_boucliers = {nom: Bouclier(data) for nom, data in dict_brut_boucliers.items()}
+with col_panneau:
+    st.subheader("📋 Informations & Actions")
+    
+    with st.expander("📍 Marqueur Sélectionné", expanded=True):
+        st.write("**Nom du lieu :** Donjon d'Aethelgard")
+        st.write("**Description :** Forteresse nichée dans les montagnes.")
+        st.image("https://picsum.photos/300/200", width="stretch")
 
+    st.divider()
 
-                            # Récupération du dictionnaire pour la boucle
-                            dicoCarac = st.session_state.dict_global_carac
-                            dicoComp = st.session_state.dict_global_comp
-                            dicoCompSpe = st.session_state.dict_global_comp_spe
-                            manager_spe = CompSpeManager(dicoCompSpe)
-                            dicoSorts = st.session_state.dict_global_sorts
-                            dicoMaitrise = st.session_state.dict_global_maitrise
-                            dicoEquipement = st.session_state.dict_global_equipement
-                            dicoArme = st.session_state.ref_armes
-                            dicoArmure = st.session_state.ref_armures                            
-                            dicoBouclier = st.session_state.ref_boucliers
-                            
-                            # --- DÉBUT DE LA BOUCLE SUR LES PERSONNAGES ---
-                            for _, p in df_persos.iterrows():
-                                # Variables d'identification
-                                id_p = p['IdPersonnage']
-                                
-                                maitrise_data = dicoMaitrise.get(id_p, {})
-                                equip_data = dicoEquipement.get(id_p, {})
-                                
-                                total_xp = p['TotalXP']
-                                niveau_global = moteur_niveau.convertir_xp_en_niveau(total_xp)
-                                # On ajoute (ou met à jour) la clé 'NivGlobal' dans l'objet p
-                                p['NivGlobal'] = niveau_global
-                                
-                                # On extrait les stats du personnage précis
-                                caracPerso = dicoCarac.get(id_p, {}) 
-                                
-                                # On vérifie si on a bien trouvé des stats, sinon on met un dico vide
-                                if not caracPerso:
-                                    st.warning(f"Aucune caractéristique trouvée pour {p['Nom']}")
-
-                                # Récupération sécurisée des compétences du perso spécifique
-                                data_comp = dicoComp.get(id_p, [])
-                                if not isinstance(data_comp, list):
-                                    data_comp = []
-                                
-                                # Formatage des textes d'affichage
-                                m_acq = p.get('MagieAcq', "")
-                                magie_Aff = p['MagieInn'] if (pd.isna(m_acq) or m_acq == "") else f"{p['MagieInn']} / {m_acq}"
-                                
-                                c1_nom = p['Classe1']
-                                c2_brute = p.get('Classe2', "")
-                                c2_nom = "" if pd.isna(c2_brute) else str(c2_brute)
-                                classe_Aff = c1_nom if c2_nom == "" else f"{c1_nom} / {c2_nom}"
-                        
-                                choix_spe = manager_spe.get_tous_choix_spe(p['IdPersonnage'])
-                                
-                                listeSorts = LstSorts(dicoSorts, bdd, url_magies, couleur_magie)
-                                
-                                df_coul = pd.DataFrame(st.session_state.dict_global_couleur_magie)
-                                dieu_inn_info = df_coul[df_coul['NomMagie'] == p['MagieInn']]['Dieux'].values
-                                dieu_inn_final = dieu_inn_info[0] if len(dieu_inn_info) > 0 else "Aucun"
-                                
-                                # Affichage de l'Expander
-                                with st.expander(f"🎭 {p['Nom']} ({p.get('Surnom', '')}) - {p['Race']} - Magie : {magie_Aff} - Classe : {classe_Aff}"):
-                                    # Récupération des données de classe
-                                    df_c1 = charger_df_classe(bddManager.conn, url_classes, c1_nom)
-                                    #st.dataframe(df_c1)
-                                    obj_classe1 = ClassePerso(c1_nom, df_c1)
-                                    
-                                    obj_classe2 = None
-                                    if c2_nom != "":
-                                        df_c2 = charger_df_classe(bddManager.conn, url_classes, c2_nom)
-                                        obj_classe2 = ClassePerso(c2_nom, df_c2)
-                                    
-                                    sorts_affichage = listeSorts.preparer_affichage(
-                                        p['IdPersonnage'], 
-                                        p['MagieInn'], 
-                                        p['MagieAcq']
-                                    )
-                                    
-                                    # Appel de la fiche avec les données du personnage actuel (data_comp)
-                                    fiche_detaillee.afficher_fiche_complete(p, caracPerso, data_comp, obj_classe1, obj_classe2,choix_spe,sorts_affichage,dieu_inn_final,maitrise_data,equip_data,dicoArme,dicoArmure,dicoBouclier,dicoMatArme)
-                                    
+    # Formulaire disponible si connecté
+    if st.session_state.utilisateur:
+        st.markdown(f"### ➕ Proposer un Marqueur ({st.session_state.utilisateur['Nom']})")
+        with st.expander("Créer un marqueur temporaire"):
+            st.info(f"Droit actuel : **{st.session_state.utilisateur['Droit']}**")
+            nom_m = st.text_input("Nom du lieu")
+            desc_m = st.text_area("Description")
+            if st.button("Envoyer pour validation", type="primary", width="stretch"):
+                st.success("Marqueur soumis !")
+    else:
+        st.warning("🔒 Connectez-vous avec votre compte Google pour proposer des marqueurs.")
