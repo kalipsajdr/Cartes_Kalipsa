@@ -9,7 +9,7 @@ def hashar_email(email: str) -> str:
 
 def verifier_utilisateur(email_hashe: str, bdd_df: pd.DataFrame) -> dict:
     """Recherche l'empreinte hachée dans la colonne 'Mail'."""
-    if bdd_df.empty or 'Mail' not in bdd_df.columns:
+    if bdd_df is None or bdd_df.empty or 'Mail' not in bdd_df.columns:
         return None
 
     match = bdd_df[bdd_df['Mail'].astype(str).str.strip() == email_hashe]
@@ -88,7 +88,10 @@ def enregistrer_nouveau_compte(pseudo: str, email_hashe: str, bdd_df):
     }
     return nouvel_user
 
-def afficher_module_connexion():
+def afficher_module_connexion(bdd_df=None):
+    # Si la base n'est pas passée en paramètre, tu peux la charger ici par sécurité
+    if bdd_df is None:
+       pass
     """Gère l'affichage de la connexion et de la création de compte."""
     st.markdown("### 🔑 Espace Membre")
     

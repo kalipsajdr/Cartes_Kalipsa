@@ -1,0 +1,139 @@
+<script>
+    const container = document.getElementById('map-container');
+    const wrapper = document.getElementById('map-image-wrapper');
+    const img = document.getElementById('map-img');
+    const badge = document.getElementById('zoom-badge');
+    
+    let markerElement = null;
+    let isDown = false;
+    let startX, startY, scrollLeft, scrollTop;
+
+    function afficherMarqueurParCoords(coordX, coordY) {
+        if (markerElement) {
+            markerElement.remove();
+        }
+
+        const currentWidth = img.offsetWidth;
+        const ratio = currentWidth / 1000;
+        const renderX = coordX * ratio;
+        const renderY = coordY * ratio;
+
+        markerElement = document.createElement('div');
+        markerElement.style.position = 'absolute';
+        markerElement.style.left = (renderX - 15) + 'px';
+        markerElement.style.top = (renderY - 42) + 'px';
+        markerElement.style.pointerEvents = 'none';
+        markerElement.style.zIndex = '50';
+
+        markerElement.innerHTML = `
+            <svg width="30" height="45" viewBox="0 0 30 45" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+                  <feDropShadow dx="1" dy="3" stdDeviation="2" flood-color="#000" flood-opacity="0.5"/>
+                </filter>
+                <radialGradient id="grad-orange" cx="35%" cy="35%" r="65%">
+                  <stop offset="0%" stop-color="#ffcc80" />
+                  <stop offset="50%" stop-color="#ff9800" />
+                  <stop offset="100%" stop-color="#e65100" />
+                </radialGradient>
+              </defs>
+              <path d="M15 1 C7.2 1 1 7.2 1 15 C1 24.5 15 44 15 44 C15 44 29 24.5 29 15 C29 7.2 22.8 1 15 Z" 
+                    fill="#222" stroke="#000" stroke-width="1.5" filter="url(#shadow)"/>
+              <circle cx="15" cy="14" r="8" fill="url(#grad-orange)" stroke="#fff" stroke-width="1.5"/>
+            </svg>
+        `;
+        wrapper.appendChild(markerElement);
+    }
+
+    const savedCoords = "__SAVED_COORDS__";
+    if (savedCoords) {
+        const parts = savedCoords.split(',');
+        if (parts.length === 2) {
+            const cx = parseFloat(parts[0]);
+            const cy = parseFloat(parts[1]);
+            if (!isNaN(cx) && !isNaN(cy)) {
+                if (img.complete) {
+                    afficherMarqueurParCoords(cx, cy);
+                } else {
+                    img.onload = () => afficherMarqueurParCoords(cx, cy);
+                }
+            }
+        }
+    }
+
+    container.addEventListener('mousedown', (e) => {
+        isDown = true;
+        startX = e.pageX - container.offsetLeft;
+        startY = e.pageY - container.offsetTop;
+        scrollLeft = container.scrollLeft;
+        scrollTop = container.scrollTop;
+    });
+
+    container.addEventListener('mouseleave', () => { isDown = false; });
+    container.addEventListener('mouseup', () => { isDown = false; });
+
+    container.addEventListener('mousemove', (e) => {
+        if (!isDown) return;
+        e.preventDefault();
+        const x = e.pageX - container.offsetLeft;
+        const y = e.pageY - container.offsetTop;
+        container.scrollLeft = scrollLeft - (x - startX);
+        container.scrollTop = scrollTop - (y - startY);
+    });
+
+    img.addEventListener('click', (e) => {
+        const rect = img.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        
+        const scale = 1000 / img.offsetWidth;
+        const finalX = Math.round(clickX * scale);
+        const finalY = Math.round(clickY * scale);
+        
+        const coordString = finalX + ", " + finalY;
+        
+        afficherMarqueurParCoords(finalX, finalY);
+        
+        // Stockage dans le localStorage accessible par la page parente, puis rechargement propre
+        try {
+            window.parent.localStorage.setItem('kalipsa_coords', coordString);
+            window.parent.location.reload();
+        } catch (err) {
+            // Fallback si le localStorage est restreint
+            console.error(err);
+        }
+    });
+
+    container.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        let currentWidth = wrapper.offsetWidth;
+        let zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+        let newWidth = Math.round(currentWidth * zoomFactor);
+        
+        if (newWidth < 500) newWidth = 500;
+        if (newWidth > 3000) newWidth = 3000;
+
+        wrapper.style.width = newWidth + 'px';
+        badge.innerText = Math.round((newWidth / 1000) * 100) + '%';
+    }, { passive: false });
+    
+    img.addEventListener('click', (e) => {
+        const rect = img.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        
+        const scale = 1000 / img.offsetWidth;
+        const finalX = Math.round(clickX * scale);
+        const finalY = Math.round(clickY * scale);
+        
+        const coordString = finalX + ", " + finalY;
+        
+        afficherMarqueurParCoords(finalX, finalY);
+        
+        // Transmission directe à Streamlit via l'API composant
+        window.parent.postMessage({
+            type: 'streamlit:setComponentValue',
+            value: coordString
+        }, '*');
+    });
+    </script>

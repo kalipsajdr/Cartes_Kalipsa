@@ -1,306 +1,195 @@
 import streamlit as st
 import pandas as pd
-import streamlit.components.v1 as components
-import base64
-
 import gspread
 from google.oauth2.service_account import Credentials
+import streamlit.components.v1 as components
+
 from RecupLogo import charger_image_depuis_drive, charger_liens_importants
-
 from connexionCompte import afficher_module_connexion
+from carte import Carte
+from validationMarqueur import enregistrer_nouveau_marqueur
+from composantCarte import afficher_carte_interactive
+from gestionCarte import creer_nouvelle_carte
 
-# Connexion automatique via st.secrets
+# Configuration de la page
+st.set_page_config(
+    page_title="Cartographie Interactive Kalipsa",
+    layout="wide",
+)
+
+# --- Interception des coordonnées stockées par la carte HTML via localStorage ---
+if "coords_selectionnees" not in st.session_state:
+    st.session_state["coords_selectionnees"] = ""
+
+# Initialisation sécurisée de l'état de session
+if "utilisateur" not in st.session_state:
+    st.session_state.utilisateur = None
+    
+if "coords_selectionnees" not in st.session_state:
+    st.session_state["coords_selectionnees"] = ""
+
+# Interception des coordonnées transmises par l'URL
+if "coords" in st.query_params:
+    val_coords = st.query_params["coords"]
+    if isinstance(val_coords, list) and len(val_coords) > 0:
+        st.session_state["coords_selectionnees"] = val_coords[0]
+    elif isinstance(val_coords, str):
+        st.session_state["coords_selectionnees"] = val_coords
+    del st.query_params["coords"]
+
+# Connexion Google Sheets
 scopes = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
-
-creds = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"], 
-    scopes=scopes
-)
-
-# Client Google Sheets
+creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
 client = gspread.authorize(creds)
-sheet = client.open_by_key("1wLIA_HaiIOUEJ818Z1zN0aEIiWXj_2RuD3BkvKrOalQ")
-
-# --- 1. RÉCUPÉRATION DU LOGO DEPUIS GOOGLE SHEETS ---
 SPREADSHEET_ID = "1wLIA_HaiIOUEJ818Z1zN0aEIiWXj_2RuD3BkvKrOalQ"
+sheet = client.open_by_key(SPREADSHEET_ID)
 
-# --- 1. Chargement des liens importants ---
-liens = charger_liens_importants(SPREADSHEET_ID)
-
-# --- 2. Affichage propre du Logo et du Titre ---
+# Chargement du Logo et Titre
 flux_logo = charger_image_depuis_drive("Logo.png")
-
 if flux_logo:
-    # On crée deux colonnes : une étroite pour l'image, une plus large pour le texte
     col_img, col_txt = st.columns([1, 5])
-    
     with col_img:
         st.image(flux_logo, width=70)
-        
     with col_txt:
-        # On ajuste l'alignement vertical avec un peu de CSS ou directement un titre Markdown stylisé
         st.markdown("<h2 style='margin-top: 5px;'>Navigation</h2>", unsafe_allow_html=True)
 else:
     st.markdown("## Navigation")
 
-# --- 2. CONFIGURATION DE LA PAGE ---
-st.set_page_config(
-    page_title="Cartographie Interactive JDR",
-    page_icon=flux_logo, 
-    layout="wide",
-#    initial_sidebar_state="collapsed"  # <-- Masque la sidebar par défaut
-)
-
-# --- Affichage du logo dans la barre latérale si besoin ---
-# if logo_url:
-#     try:
-#         st.sidebar.image(logo_url, width=100)
-#     except Exception:
-#         st.sidebar.image("🗺️") # Fallback si le lien Drive bloque
-
-# --- 3. INITIALISATION DU SESSION STATE & DE LA BDD ---
+# --- Chargement de la base utilisateurs pour le module de connexion ---
 @st.cache_data(ttl=60)
-def charger_base_identification(sheet_id: str) -> pd.DataFrame:
-    """Chargement de la table Identification au démarrage."""
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/gviz/tq?tqx=out:csv&sheet=Identification"
+def charger_base_identification(_sheet) -> pd.DataFrame:
+    """Charge la table Identification via l'objet gspread existant."""
     try:
-        df = pd.read_csv(url)
-        df.columns = df.columns.str.strip()
+        ws = _sheet.worksheet("Identification")
+        data = ws.get_all_records()
+        df = pd.DataFrame(data)
+        if not df.empty:
+            df.columns = df.columns.str.strip()
         return df
-    except Exception:
+    except Exception as e:
+        print(f"Erreur chargement base identification : {e}")
         return pd.DataFrame(columns=["ID", "Nom", "Mail", "Droit"])
 
 if "bdd_utilisateurs" not in st.session_state:
-    st.session_state.bdd_utilisateurs = charger_base_identification(SPREADSHEET_ID)
+    st.session_state.bdd_utilisateurs = charger_base_identification(sheet)
 
-if "utilisateur" not in st.session_state:
-    st.session_state.utilisateur = None  # Est maintenant bien initialisé !
-
-if "carte_courante" not in st.session_state:
-    st.session_state.carte_courante = "Carte du Monde"
-
-# --- 4. BARRE DE NAVIGATION ET ESPACE MEMBRE ---
+# Barre de navigation et espace membre
 col_nav, col_auth = st.columns([3, 1.2])
-
 with col_auth:
-    # L'utilisateur et la session sont bien définis avant cet appel
-    afficher_module_connexion()
+    afficher_module_connexion(st.session_state.bdd_utilisateurs)
 
 st.divider()
 
-# --- 5. RESTE DE L'INTERFACE (Carte, Panneau) ---
+# Structure principale (Carte / Panneau)
 col_carte, col_panneau = st.columns([3, 1.2])
-
 fluxCarte = charger_image_depuis_drive("Carte Monde.png")
 
 with col_carte:
-    st.subheader(f"📍 {st.session_state.carte_courante}")
-    
-    # --- Ligne de temps (Chronologie de la carte) ---
-    st.markdown("### ⏳ Ligne de temps")
-    
-    # Création du curseur de l'an 10 à l'an 900
-    annee_selectionnee = st.slider(
-        "Année de référence pour la carte",
-        min_value=10,
-        max_value=900,
-        value=10,  # Année par défaut au chargement
-        step=1,    # Pas d'1 an (tu peux passer à 5 ou 10 si tu préfères des sauts plus grands)
-        format="Année %d"
-    )
-    
-    # Sauvegarde dans la session pour y accéder facilement depuis tes futurs modules de marqueurs/événements
-    st.session_state["annee_carte"] = annee_selectionnee
-    
-    # Petit retour visuel (optionnel)
-    # st.caption(affichage := f"Affichage de la carte et des événements pour l'**Année {annee_selectionnee}**")
-    
-    #Zoom de la carte
-    # Initialisation de l'état du zoom s'il n'existe pas
-    if "zoom_niveau" not in st.session_state:
-        st.session_state["zoom_niveau"] = 100  # En pourcentage (ex: 100%)
-
-    # # Slider pour contrôler le zoom de la carte
-    # # --- Initialisation et affichage de ton Slider de Zoom ---
-    # if "zoom_niveau" not in st.session_state:
-    #     st.session_state["zoom_niveau"] = 100
-    
-    zoom_val = 100
-    # zoom_val = st.slider(
-    #     "Zoom de la carte",
-    #     min_value=50,
-    #     max_value=300,
-    #     value=st.session_state["zoom_niveau"],
-    #     step=10,
-    #     format="%d%%",
-    #     key="slider_zoom"
-    # )
-    
-    st.session_state["zoom_niveau"] = zoom_val
-
-    #Carte affichée
-
-    if fluxCarte:
-        if "zoom_niveau" not in st.session_state:
-            st.session_state["zoom_niveau"] = 100
+    try:
+        ws_cartes = sheet.worksheet("Carte").get_all_records()
+        ws_marques = sheet.worksheet("Marque").get_all_records()
+        ws_dates = sheet.worksheet("DateMarque").get_all_records()
         
-        zoom_pct = st.session_state["zoom_niveau"]
-        largeur_base = 1000
-        largeur_actuelle = int(largeur_base * (zoom_pct / 100))
+        cartes = [Carte.depuis_ligne(row) for row in ws_cartes]
         
-        # Conversion de l'image en Base64
-        fluxCarte.seek(0)
-        encoded_img = base64.b64encode(fluxCarte.read()).decode("utf-8")
-        img_data_url = f"data:image/png;base64,{encoded_img}"
+        carte_courante = next((c for c in cartes if c.nom == st.session_state.get("carte_courante", "Carte du Monde")), None)
+        if not carte_courante:
+            carte_courante = next((c for c in cartes if c.id == "1"), None)
         
-        # Phrase d'indication au-dessus de la carte
-        st.markdown("<p style='text-align: center; color: #666; font-style: italic;'>💡 Pour le zoom, utilisez la molette de votre souris (ou Ctrl + Molette). Maintenez le clic gauche pour vous déplacer.</p>", unsafe_allow_html=True)
-    
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-            body {{
-                margin: 0;
-                background-color: #f8f9fa;
-                overflow: hidden;
-                font-family: sans-serif;
-            }}
-            /* Conteneur global qui englobe la carte et l'infobulle fixe */
-            #map-wrapper-outer {{
-                position: relative;
-                width: 100%;
-                height: 600px;
-            }}
-            #map-container {{
-                width: 100%;
-                height: 580px;
-                overflow: auto;
-                border: 2px solid #ccc;
-                border-radius: 8px;
-                background-color: #f8f9fa;
-                position: relative;
-                cursor: grab;
-                user-select: none;
-            }}
-            #map-container:active {{
-                cursor: grabbing;
-            }}
-            #map-image-wrapper {{
-                width: {largeur_actuelle}px;
-                height: auto;
-                pointer-events: none;
-                transform-origin: 0 0;
-            }}
-            img {{
-                width: 100%;
-                height: auto;
-                display: block;
-            }}
-            /* Infobulle positionnée de manière fixe sur le composant (ne bouge plus avec la carte) */
-            #zoom-badge {{
-                position: absolute;
-                bottom: 25px;
-                right: 20px;
-                background-color: rgba(0, 0, 0, 0.75);
-                color: white;
-                padding: 6px 12px;
-                border-radius: 20px;
-                font-size: 14px;
-                font-weight: bold;
-                pointer-events: none;
-                box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-                z-index: 100;
-            }}
-        </style>
-        </head>
-        <body>
-            <div id="map-wrapper-outer">
-                <div id="map-container">
-                    <div id="map-image-wrapper">
-                        <img src="{img_data_url}" />
-                    </div>
-                </div>
-                <!-- L'infobulle est ici, indépendante du scroll de la carte -->
-                <div id="zoom-badge">{zoom_pct}%</div>
-            </div>
-    
-            <script>
-            const container = document.getElementById('map-container');
-            const wrapper = document.getElementById('map-image-wrapper');
-            const badge = document.getElementById('zoom-badge');
+        st.subheader(f"📍 {st.session_state.get('carte_courante', 'Carte du Monde')}")
+        
+        # Ligne de temps
+        st.markdown("### ⏳ Ligne de temps")
+        annee_selectionnee = st.slider(
+            "Année de référence pour la carte",
+            min_value=10, max_value=900, value=11, step=1, format="Année %d"
+        )
+        st.session_state["annee_carte"] = annee_selectionnee
+        
+        # Chargement sécurisé du flux de la carte
+        fluxCarte = charger_image_depuis_drive("Carte Monde.png")
+        if fluxCarte:
+            afficher_carte_interactive(fluxCarte)
+        else:
+            st.error("Impossible de charger l'image 'Carte Monde.png' depuis Google Drive.")
             
-            let isDown = false;
-            let startX, startY, scrollLeft, scrollTop;
-    
-            // Glisser-déposer (Pan)
-            container.addEventListener('mousedown', (e) => {{
-                isDown = true;
-                startX = e.pageX - container.offsetLeft;
-                startY = e.pageY - container.offsetTop;
-                scrollLeft = container.scrollLeft;
-                scrollTop = container.scrollTop;
-            }});
-    
-            container.addEventListener('mouseleave', () => {{ isDown = false; }});
-            container.addEventListener('mouseup', () => {{ isDown = false; }});
-    
-            container.addEventListener('mousemove', (e) => {{
-                if (!isDown) return;
-                e.preventDefault();
-                const x = e.pageX - container.offsetLeft;
-                const y = e.pageY - container.offsetTop;
-                const walkX = x - startX;
-                const walkY = y - startY;
-                container.scrollLeft = scrollLeft - walkX;
-                container.scrollTop = scrollTop - walkY;
-            }});
-    
-            // Zoom à la molette avec mise à jour de l'infobulle fixe
-            container.addEventListener('wheel', (e) => {{
-                e.preventDefault();
-                let currentWidth = wrapper.offsetWidth;
-                
-                let zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-                let newWidth = Math.round(currentWidth * zoomFactor);
-                
-                if (newWidth < 500) newWidth = 500;
-                if (newWidth > 3000) newWidth = 3000;
-    
-                wrapper.style.width = newWidth + 'px';
-    
-                let currentPct = Math.round((newWidth / 1000) * 100);
-                badge.innerText = currentPct + '%';
-            }}, {{ passive: false }});
-            </script>
-        </body>
-        </html>
-        """
-        
-        components.html(html_content, height=600)
+    except Exception as e:
+        st.error(f"Erreur lors du chargement de la carte : {e}")
 
 with col_panneau:
     st.subheader("📋 Informations & Actions")
     
-    with st.expander("📍 Marqueur Sélectionné", expanded=True):
-        st.write("**Nom du lieu :** Donjon d'Aethelgard")
-        st.write("**Description :** Forteresse nichée dans les montagnes.")
-        st.image("https://picsum.photos/300/200", width="stretch")
-
-    st.divider()
-
-    # Formulaire disponible si connecté
-    if st.session_state.utilisateur:
+    if st.session_state.get("utilisateur"):
         st.markdown(f"### ➕ Proposer un Marqueur ({st.session_state.utilisateur['Nom']})")
-        with st.expander("Créer un marqueur temporaire"):
+        
+        with st.expander("Créer un marqueur temporaire", expanded=True):
             st.info(f"Droit actuel : **{st.session_state.utilisateur['Droit']}**")
-            nom_m = st.text_input("Nom du lieu")
-            desc_m = st.text_area("Description")
-            if st.button("Envoyer pour validation", type="primary", width="stretch"):
-                st.success("Marqueur soumis !")
+            
+            coords_actuelles = st.session_state.get("coords_selectionnees", "")
+            if coords_actuelles:
+                st.success(f"📍 Emplacement enregistré : **{coords_actuelles}**")
+            else:
+                st.warning("👆 Cliquez sur la carte pour définir l'emplacement du marqueur.")
+        
+            with st.form("form_ajout_marqueur"):
+                nom_lieu = st.text_input("Nom du lieu")
+                
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    debut_marque = st.number_input("Date de début", min_value=10, max_value=900, value=int(st.session_state.get("annee_carte", 10)), step=1)
+                with col_d2:
+                    fin_marque = st.number_input("Date de fin", min_value=10, max_value=900, value=900, step=1)
+                    
+                # Le fichier image récupéré depuis l'interface que tu viens de montrer :
+                image_marqueur = st.file_uploader("Image du marqueur (facultatif, 5 Mo max)", type=["png", "jpg", "jpeg"])
+                
+                description = st.text_area("Description")
+            
+                submit_button = st.form_submit_button(label="Envoyer pour validation", type="primary")
+                
+                if submit_button:
+                    coordonnees = st.session_state.get("coords_selectionnees", "").strip()
+                    
+                    if nom_lieu and coordonnees:
+                        # 1. Si une image de carte est fournie, on lance l'initialisation de la carte en base + thread d'upload
+                        id_carte_associee = ""
+                        if image_marqueur is not None:
+                            # On utilise le nom du lieu saisi comme nom de la carte, et on lance le thread d'upload
+                            succes_carte, res_carte = creer_nouvelle_carte(
+                                sheet=sheet,
+                                nom_carte=nom_lieu,
+                                image_file=image_marqueur
+                            )
+                            if succes_carte:
+                                id_carte_associee = str(res_carte) # Récupération de l'ID généré pour le lier au marqueur
+                            else:
+                                st.error(f"Erreur lors de la création de la carte : {res_carte}")
+                                st.stop()
+                        
+                        # 2. Ensuite, on enregistre le marqueur en lui passant l'ID de la carte associée (s'il y en a une)
+                        succes, resultat = enregistrer_nouveau_marqueur(
+                            sheet=sheet,
+                            carte_courante=carte_courante,
+                            nom_lieu=nom_lieu,
+                            coordonnees=coordonnees,
+                            debut_marque=debut_marque,
+                            fin_marque=fin_marque,
+                            description=description,
+                            lien_id_carte=id_carte_associee  # ID récupéré automatiquement de la nouvelle carte créée
+                        )
+                        
+                        if succes:
+                            st.session_state["coords_selectionnees"] = ""
+                            if "coords" in st.query_params:
+                                del st.query_params["coords"]
+                            st.success(f"Le marqueur et sa carte associée '{nom_lieu}' ont été pris en compte avec succès ! L'upload se fait en arrière-plan.")
+                            st.rerun()
+                        else:
+                            st.error(f"Erreur lors de l'enregistrement du marqueur : {resultat}")
+                    else:
+                        st.warning("Veuillez renseigner le nom du lieu et cliquer sur la carte pour définir l'emplacement.")
     else:
-        st.warning("🔒 Connectez-vous avec votre compte Google pour proposer des marqueurs.")
+        st.warning("🔒 Connectez-vous avec votre compte pour proposer des marqueurs.")
